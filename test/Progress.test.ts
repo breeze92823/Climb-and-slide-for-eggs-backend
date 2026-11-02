@@ -27,10 +27,13 @@ describe("progress", () => {
     assert.deepStrictEqual(got?.weightsOwned, ["dumbbell", "sphere"]);
     assert.strictEqual(got?.weightEquipped, "sphere");
 
-    c.send("saveProgress", { cash: 7000, strength: 80, best: 40, eggs: [0, 1, 1], pets: [{ id: "parrot", on: true }], rebirths: 2, hack: 1 });
+    c.send("saveProgress", { cash: 7000, strength: 80, best: 40, eggs: [0, 1, 1], pets: [{ id: "parrot", on: true }], rebirths: 2, goalPlayed: 90.5, goalHatched: 3, goalDone: ["pass"], hack: 1 });
     await sleep(150);
     const doc = fake.docs.get("u1")! as any;
     assert.strictEqual(doc.cash, 7000);
+    assert.strictEqual(doc.goalPlayed, 90.5);
+    assert.strictEqual(doc.goalHatched, 3);
+    assert.deepStrictEqual(doc.goalDone, ["pass"]);
     assert.deepStrictEqual(doc.eggs, [0, 1, 1]);
     assert.deepStrictEqual(doc.pets, [{ id: "parrot", on: true }]);
     assert.strictEqual(doc.rebirths, 2);

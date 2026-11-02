@@ -1,6 +1,6 @@
 // Keep in step with the client's src/config.js by hand.
 // 2-100 (Bloxity party play); the deploy workflow reads this number as `roomSize`.
-export const ROOM_MAX_CLIENTS = 50;
+export const ROOM_MAX_CLIENTS = 4; // one base seat each (client BASES.list)
 
 // Longest accepted strings.
 export const NAME_MAX = 64;
@@ -19,6 +19,7 @@ export const CURRENCY_MAX = 1e33; // cash, strength
 export const BEST_MAX = 1e9; // best climb, HUD metres
 export const REBIRTHS_MAX = 1e9;
 export const PAWS_MAX = 1e9;
+export const GOAL_MAX = 1e12; // lobby goals: seconds played, eggs hatched
 // Client RUN.hotbar: eggs in the hotbar are tier indexes into RUN.tiers.
 export const HOTBAR_EGGS_MAX = 64;
 export const EGG_TIERS_MAX = 64;
@@ -50,4 +51,8 @@ export const AD_PLACEMENTS = ["free-cash"] as const;
 export const POSE_MIN_INTERVAL_MS = 60; // faster `pose` messages are dropped (the client sends every ~100 ms)
 export const POSE_COORD_MAX = 100_000; // |x|, |y|, |z| in metres
 export const POSE_SPEED_MAX = 100; // m/s
+// A player's plot as shown to the others: { p: active pet ids, w: equipped weight id, r: rate text }.
+export const BASE_PETS_MAX = 40;
+export const BASE_ID_MAX = 40;
+export const BASE_RATE_MAX = 24;
 export const AVATAR_MAX_LEN = 4096; // JSON text of SDK.avatar.getEquipped() + proportions

@@ -1,5 +1,5 @@
 import {
-  CURRENCY_MAX, BEST_MAX, REBIRTHS_MAX, PAWS_MAX, HOTBAR_EGGS_MAX, EGG_TIERS_MAX, PLACED_MAX, PETS_MAX,
+  CURRENCY_MAX, BEST_MAX, REBIRTHS_MAX, PAWS_MAX, GOAL_MAX, HOTBAR_EGGS_MAX, EGG_TIERS_MAX, PLACED_MAX, PETS_MAX,
   BASE_LEVEL_MAX, OWNED_MAX, INDEX_MAX, ID_PATTERN, FOUND_PATTERN,
 } from "./constants.js";
 import type { PlayerDoc, PlacedEgg, SavedPet } from "./db.js";
@@ -66,6 +66,7 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
   if (typeof raw.auto === "boolean") out.auto = raw.auto;
 
   if (finite(raw.cash)) out.cash = clampNum(raw.cash, CURRENCY_MAX);
+  if (finite(raw.coins)) out.coins = clampInt(raw.coins, CURRENCY_MAX);
   if (finite(raw.cashAt)) out.cashAt = clampInt(raw.cashAt, Date.now() + 10 * 60 * 1000);
 
   if (raw.placed !== undefined) out.placed = sanitizePlaced(raw.placed);
@@ -83,6 +84,11 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
 
   if (typeof raw.sellAuto === "boolean") out.sellAuto = raw.sellAuto;
   if (finite(raw.paws)) out.paws = clampInt(raw.paws, PAWS_MAX);
+  if (finite(raw.goalPlayed)) out.goalPlayed = clampNum(raw.goalPlayed, GOAL_MAX);
+  if (finite(raw.goalHatched)) out.goalHatched = clampInt(raw.goalHatched, GOAL_MAX);
+  if (finite(raw.goalGiftAt)) out.goalGiftAt = clampNum(raw.goalGiftAt, GOAL_MAX);
+  if (finite(raw.goalPaw)) out.goalPaw = clampInt(raw.goalPaw, GOAL_MAX);
+  if (raw.goalDone !== undefined) out.goalDone = sanitizeIds(raw.goalDone);
   if (finite(raw.lastSeen)) out.lastSeen = clampInt(raw.lastSeen, Date.now() + 10 * 60 * 1000);
   return out;
 }

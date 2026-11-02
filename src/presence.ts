@@ -1,4 +1,4 @@
-import { AVATAR_MAX_LEN, POSE_COORD_MAX, POSE_SPEED_MAX } from "./constants.js";
+import { AVATAR_MAX_LEN, BASE_ID_MAX, BASE_PETS_MAX, BASE_RATE_MAX, POSE_COORD_MAX, POSE_SPEED_MAX } from "./constants.js";
 
 export interface Pose {
   x: number;
@@ -31,4 +31,16 @@ export function sanitizePose(raw: unknown): Pose | null {
 export function sanitizeAvatar(raw: unknown): string | null {
   const s = (raw as { look?: unknown } | null)?.look;
   return typeof s === "string" && s.length <= AVATAR_MAX_LEN ? s : null;
+}
+
+const ID = /^[A-Za-z0-9_-]+$/;
+
+/** The plot summary as JSON text ({ p: pet ids, w: weight id, r: rate text }), rebuilt from the message so only bounded values are relayed; null when not one. */
+export function sanitizeBase(raw: unknown): string | null {
+  const m = raw as { p?: unknown; w?: unknown; r?: unknown } | null;
+  if (!m || typeof m !== "object" || !Array.isArray(m.p)) return null;
+  const p = m.p.filter((id): id is string => typeof id === "string" && id.length <= BASE_ID_MAX && ID.test(id)).slice(0, BASE_PETS_MAX);
+  const w = typeof m.w === "string" && m.w.length <= BASE_ID_MAX && ID.test(m.w) ? m.w : "";
+  const r = typeof m.r === "string" ? m.r.slice(0, BASE_RATE_MAX) : "";
+  return JSON.stringify({ p, w, r });
 }
