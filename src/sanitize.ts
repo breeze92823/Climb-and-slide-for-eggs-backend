@@ -77,6 +77,10 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
   if (isId(raw.weightEquipped)) out.weightEquipped = raw.weightEquipped;
   if (out.weightsOwned && out.weightEquipped && !out.weightsOwned.includes(out.weightEquipped)) delete out.weightEquipped;
 
+  if (raw.trailsOwned !== undefined) out.trailsOwned = sanitizeIds(raw.trailsOwned);
+  if (isId(raw.trailEquipped)) out.trailEquipped = raw.trailEquipped;
+  if (out.trailsOwned && out.trailEquipped && !out.trailsOwned.includes(out.trailEquipped)) delete out.trailEquipped;
+
   if (finite(raw.rebirths)) out.rebirths = clampInt(raw.rebirths, REBIRTHS_MAX);
 
   if (raw.indexEggs !== undefined) out.indexEggs = sanitizeIds(raw.indexEggs, INDEX_MAX);
