@@ -11,7 +11,7 @@ import { testServer } from "./server.js";
 
 describe("presence rules", () => {
   it("bounds a pose and rejects anything that is not one", () => {
-    assert.deepStrictEqual(sanitizePose({ x: 1, y: 2, z: 3, yaw: 1, speed: 4 }), { x: 1, y: 2, z: 3, yaw: 1, speed: 4 });
+    assert.deepStrictEqual(sanitizePose({ x: 1, y: 2, z: 3, yaw: 1, speed: 4 }), { x: 1, y: 2, z: 3, yaw: 1, speed: 4, anim: 0 });
     const p = sanitizePose({ x: 1e12, y: -1e12, z: 0, yaw: 7 * Math.PI, speed: 1e9 })!;
     assert.strictEqual(p.x, POSE_COORD_MAX);
     assert.strictEqual(p.y, -POSE_COORD_MAX);
