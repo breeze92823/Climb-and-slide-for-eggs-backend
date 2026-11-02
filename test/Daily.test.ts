@@ -70,7 +70,7 @@ describe("daily reward room", () => {
     assert.deepStrictEqual((fake.docs.get("d1") as any).dailyClaimed, [0, 1]);
 
     // saveProgress can't touch the server-owned fields.
-    c.send("saveProgress", { trophies: 1, dailyDay: 7, dailyClaimed: [] });
+    c.send("saveProgress", { cash: 1, dailyDay: 7, dailyClaimed: [] });
     await sleep(150);
     assert.strictEqual((fake.docs.get("d1") as any).dailyDay, 2);
     assert.deepStrictEqual((fake.docs.get("d1") as any).dailyClaimed, [0, 1]);

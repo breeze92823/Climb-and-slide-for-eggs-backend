@@ -1,12 +1,11 @@
 import { Room, Client, CloseCode } from "colyseus";
 import { WorldState, PlayerState } from "./schema/WorldState.js";
-import { DISTANCE_MAX, GUEST_ID_PREFIX, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS, ROOM_MAX_CLIENTS } from "../constants.js";
+import { AD_PLACEMENTS, GUEST_ID_PREFIX, POSE_MIN_INTERVAL_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS, ROOM_MAX_CLIENTS, STATS_EVERY_MS } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
 import { sanitizeProgress } from "../sanitize.js";
-import { accrue, rollWedge, spinStateFrom, type SpinState } from "../spin.js";
+import { sanitizeAvatar, sanitizePose } from "../presence.js";
 import { claimDaily, dailyFields, dailyView, readDaily, rollDaily, type DailyState } from "../daily.js";
-import { applyAvatar, applyLoadout, applyPose } from "../presence.js";
-import { ranksOf, topBoards } from "../leaderboard.js";
+import { reportStats, statValues, verificationRequired, verifyGameToken, verifyRewardToken } from "../bloxity.js";
 
 function sanitizeName(raw: unknown): string {
   return typeof raw === "string" ? raw.slice(0, NAME_MAX) : "";
@@ -16,12 +15,20 @@ function sanitizePfp(raw: unknown): string {
   return typeof raw === "string" && raw.length <= PFP_MAX_LEN && /^https?:\/\//i.test(raw) ? raw : "";
 }
 
+interface JoinOptions {
+  username?: string;
+  userId?: string;
+  pfp?: string;
+  token?: string; // Legion.SDK.auth.getToken(): verified when deployed (bloxity.ts)
+  partyKey?: string; // Legion.SDK.party launch roomKey: a party is seated in one room
+}
+
 /**
- * Room every client joins via `client.joinOrCreate("world", { userId, username })`. Loads and
- * saves each signed-in player's progress (MongoDB, see db.ts) -- the client keeps no save of its
- * own, so this is the only place progress lives. The game is client-authoritative: no gameplay
- * rules live here, saves are only bounded (sanitize.ts). Full rooms spill into a fresh one
- * automatically (maxClients).
+ * Room every client joins via `client.joinOrCreate("world", { token, userId, username })`.
+ * Loads and saves each signed-in player's progress (MongoDB, see db.ts) -- the client keeps a
+ * localStorage copy only for guests and offline play. The game is client-authoritative: no
+ * gameplay rules live here, saves are only bounded (sanitize.ts); the Daily Reward calendar and
+ * rewarded-ad grants are the server's. Full rooms spill into a fresh one automatically (maxClients).
  */
 export class WorldRoom extends Room<{ state: WorldState }> {
   state = new WorldState();
@@ -36,15 +43,36 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   // sessionIds whose current identity's save has been read: only these may write. A save sent
   // before the load answered would overwrite the stored progress with a fresh player's defaults.
   private loaded = new Set<string>();
-  // sessionId -> Spin wheel state (spin.ts), set once the session's save has been read. Kept for
-  // guests and serverless sessions too (it then lasts the connection).
-  private spinStates = new Map<string, SpinState>();
   // sessionId -> Daily Reward state (daily.ts), read with the save. Guests and serverless sessions
   // keep theirs here only (like the rest of their progress, it lasts the session).
   private dailies = new Map<string, DailyState>();
+  // user id -> stats waiting for the next report to Bloxity (bloxity.ts).
+  private statsDirty = new Map<string, Record<string, number>>();
+  // Bumped per identity change, so an in-flight token check can tell it was superseded.
+  private authSeq = new Map<string, number>();
+
+  // sessionId -> time of the last accepted pose (rate limit).
+  private lastPose = new Map<string, number>();
 
   messages = {
-    // Debounced push of the client's whole progress. Upserts, so a first save creates the document.
+    // The player's position, ~10/s. Bounded and rate-limited; relayed to everyone through state.
+    pose: (client: Client, msg: unknown) => {
+      const p = this.state.players.get(client.sessionId);
+      const pose = sanitizePose(msg);
+      const now = Date.now();
+      if (!p || !pose || now - (this.lastPose.get(client.sessionId) ?? 0) < POSE_MIN_INTERVAL_MS) return;
+      this.lastPose.set(client.sessionId, now);
+      Object.assign(p, pose);
+      p.posed = true;
+    },
+    // The Bloxity avatar look (JSON text from the SDK), sent when it changes. Never parsed here.
+    setAvatar: (client: Client, msg: unknown) => {
+      const p = this.state.players.get(client.sessionId);
+      const look = sanitizeAvatar(msg);
+      if (p && look !== null) p.avatar = look;
+    },
+    // Debounced push of the client's progress (only the sections that changed). Upserts, so a
+    // first save creates the document.
     saveProgress: async (client: Client, msg: unknown) => {
       const p = this.state.players.get(client.sessionId);
       const patch = sanitizeProgress(msg);
@@ -55,18 +83,19 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       const players = getPlayers();
       if (!players) return; // Mongo unset/unreachable -- degrade silently
       // The personal best only ever goes up ($max), so a stale or replayed save can't lower it.
-      const { bestDistance, ...rest } = patch;
+      const { best, ...rest } = patch;
       try {
         await players.updateOne(
           { _id: userId },
           {
             // Display name comes from this connection's own PlayerState, not `msg`.
             $set: { ...rest, username: p.username || "Player", updatedAt: new Date() },
-            ...(bestDistance !== undefined && { $max: { bestDistance } }),
+            ...(best !== undefined && { $max: { best } }),
             $setOnInsert: { version: 1 },
           },
           { upsert: true },
         );
+        this.statsDirty.set(userId, { ...this.statsDirty.get(userId), ...statValues(patch) });
       } catch (err) {
         console.warn("[WorldRoom] saveProgress failed", err);
       }
@@ -92,84 +121,48 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       if (rollDaily(s)) void this.saveDaily(client.sessionId, s);
       client.send("daily", dailyView(s));
     },
-    // Spin wheel: uses one spin and rolls the prize here, so the client can't choose it. Answers
-    // `spinResult` { ok, id (SPIN_WEDGES id), spins, nextAt, serverTime } or { ok: false, reason }.
-    spin: async (client: Client) => {
-      const s = this.spinStates.get(client.sessionId);
-      if (!s) return client.send("spinResult", { ok: false, reason: "loading" });
-      const now = Date.now();
-      accrue(s, now);
-      if (s.spins < 1) return client.send("spinResult", { ok: false, reason: "none", ...this.spinView(s, now) });
-      s.spins--;
-      accrue(s, now); // dropping below the cap starts the free-spin clock
-      const wedge = rollWedge();
-      client.send("spinResult", { ok: true, id: wedge.id, ...this.spinView(s, now) });
-      await this.saveSpins(client.sessionId, s);
-    },
-    // The sender's race, relayed through the roster so everyone draws them on the distance bar and
-    // podium: { racing, distance (studs this race) }, a few times a second while racing.
-    race: (client: Client, msg: { racing?: unknown; distance?: unknown }) => {
-      const p = this.state.players.get(client.sessionId);
-      if (!p) return;
-      p.racing = msg?.racing === true;
-      const d = msg?.distance;
-      p.distance = p.racing && typeof d === "number" && Number.isFinite(d) ? Math.min(DISTANCE_MAX, Math.max(0, d)) : 0;
-    },
-    // Presence (presence.ts): the sender's pose ~10x/s, its equipped gear and its Bloxity look,
-    // relayed through the roster so everyone draws them in the world (client remotePlayers.js).
-    pose: (client: Client, msg: unknown) => {
-      const p = this.state.players.get(client.sessionId);
-      if (p) applyPose(p, msg);
-    },
-    loadout: (client: Client, msg: unknown) => {
-      const p = this.state.players.get(client.sessionId);
-      if (p) applyLoadout(p, msg);
-    },
-    setAvatar: (client: Client, msg: unknown) => {
-      const p = this.state.players.get(client.sessionId);
-      if (p) applyAvatar(p, msg);
+    // A finished rewarded ad (Legion.SDK.ads.showRewarded): the token is checked with Bloxity
+    // (single-use, this game, this placement) and only then does the client grant the reward.
+    // Answers `adResult` { ok, placement, reason? }.
+    adReward: async (client: Client, msg: { rewardToken?: unknown; placement?: unknown }) => {
+      const placement = typeof msg?.placement === "string" ? msg.placement : "";
+      const refuse = (reason: string) => client.send("adResult", { ok: false, placement, reason });
+      if (!(AD_PLACEMENTS as readonly string[]).includes(placement)) return refuse("placement");
+      const v = await verifyRewardToken(msg?.rewardToken);
+      if (!v.valid) return refuse(v.reason ?? "invalid");
+      const userId = this.userIds.get(client.sessionId);
+      if (v.placement !== placement || (v.userId && userId && v.userId !== userId)) return refuse("mismatch");
+      client.send("adResult", { ok: true, placement });
     },
     // Re-states identity after a login/logout that happens AFTER join (a guest who signs in
     // mid-session). The server answers with progress/noProgress for the new identity.
-    identify: (client: Client, msg: { username?: string; userId?: string; pfp?: string }) => {
+    identify: (client: Client, msg: JoinOptions) => {
       const p = this.state.players.get(client.sessionId);
       if (!p) return;
-      if (typeof msg?.username === "string") p.username = sanitizeName(msg.username);
-      if (typeof msg?.pfp === "string") p.pfp = sanitizePfp(msg.pfp);
-      if (typeof msg?.userId === "string") this.setUserId(client, p, msg.userId);
+      void this.authenticate(client, p, msg);
     },
   };
 
-  // Leaderboards (leaderboard.ts): everyone gets the top lists + their own ranks every
-  // LEADERBOARD_EVERY_MS, and once right after their save loads.
   onCreate() {
-    this.clock.setInterval(() => {
-      for (const c of this.clients) void this.sendLeaderboard(c);
-    }, LEADERBOARD_EVERY_MS);
+    this.clock.setInterval(() => this.flushStats(), STATS_EVERY_MS);
   }
 
-  // `leaderboard` { boards: { rebirths|trophies|energy|playtime: [{ name, value }] }, ranks: { stat: n | null } }.
-  private async sendLeaderboard(client: Client) {
-    const userId = this.userIds.get(client.sessionId) ?? "";
-    const [boards, ranks] = await Promise.all([topBoards(), ranksOf(userId)]);
-    if (!this.state.players.has(client.sessionId)) return;
-    try {
-      client.send("leaderboard", { boards, ranks });
-    } catch {
-      // Gone meanwhile.
-    }
+  onDispose() {
+    this.flushStats();
   }
 
-  onJoin(client: Client, options?: { username?: string; userId?: string; pfp?: string; pose?: unknown; loadout?: unknown; avatar?: string }) {
+  // Stats for the game page (bloxity.ts): what this room's players saved since the last report.
+  private flushStats() {
+    if (!this.statsDirty.size) return;
+    const batch = this.statsDirty;
+    this.statsDirty = new Map();
+    void reportStats(batch);
+  }
+
+  onJoin(client: Client, options?: JoinOptions) {
     const p = new PlayerState();
-    p.username = sanitizeName(options?.username);
-    p.pfp = sanitizePfp(options?.pfp);
-    // Presence from the join options, so the others draw the newcomer right away.
-    applyPose(p, options?.pose);
-    applyLoadout(p, options?.loadout);
-    applyAvatar(p, options);
     this.state.players.set(client.sessionId, p);
-    this.setUserId(client, p, typeof options?.userId === "string" ? options.userId : "");
+    void this.authenticate(client, p, options);
   }
 
   // A deliberate `room.leave()` closes with CONSENTED -- drop the player at once. Anything
@@ -207,27 +200,8 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     this.identified.delete(sessionId);
     this.loaded.delete(sessionId);
     this.dailies.delete(sessionId);
-    this.spinStates.delete(sessionId);
-  }
-
-  private spinView(s: SpinState, now: number) {
-    return { spins: s.spins, nextAt: s.nextAt, serverTime: now };
-  }
-
-  // The spin fields go straight to Mongo (saveProgress never carries them).
-  private async saveSpins(sessionId: string, s: SpinState) {
-    const userId = this.userIds.get(sessionId);
-    const players = getPlayers();
-    if (!userId || !players) return;
-    try {
-      await players.updateOne(
-        { _id: userId },
-        { $set: { spins: s.spins, spinAt: s.nextAt, updatedAt: new Date() }, $setOnInsert: { version: 1 } },
-        { upsert: true },
-      );
-    } catch (err) {
-      console.warn("[WorldRoom] saveSpins failed", err);
-    }
+    this.authSeq.delete(sessionId);
+    this.lastPose.delete(sessionId);
   }
 
   // Stores a session's Daily Reward state. True when stored, or when there is nowhere to store it
@@ -249,25 +223,46 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     }
   }
 
-  // Client-trusted Bloxity user id (guest ids are dropped, see GUEST_ID_PREFIX). A forged id can
-  // only read/overwrite the SENDER's own save (there is no cross-player read in `saveProgress`).
-  // Called from both onJoin and `identify`; answers with progress / noProgress / serverError.
-  private setUserId(client: Client, p: PlayerState, raw: string) {
+  // Works out who the player really is, then loads their save. Deployed (verificationRequired),
+  // only a token Bloxity accepts gives an identity -- a bare `userId` is ignored, so nobody can
+  // read or overwrite another account's save. Locally the sent `userId` is trusted.
+  private async authenticate(client: Client, p: PlayerState, opts?: JoinOptions) {
+    const seq = (this.authSeq.get(client.sessionId) ?? 0) + 1;
+    this.authSeq.set(client.sessionId, seq);
+    this.loaded.delete(client.sessionId); // no writes until the new identity's save is read
+    let userId = typeof opts?.userId === "string" ? opts.userId : "";
+    let carriedFrom: string[] = [];
+    p.username = sanitizeName(opts?.username);
+    p.pfp = sanitizePfp(opts?.pfp);
+
+    if (verificationRequired()) {
+      const v = await verifyGameToken(opts?.token);
+      if (this.authSeq.get(client.sessionId) !== seq || !this.state.players.has(client.sessionId)) return; // superseded or gone
+      userId = v?.user._id ?? "";
+      carriedFrom = v?.carriedFrom ?? [];
+      if (v) {
+        p.username = sanitizeName(v.user.displayName || v.user.username) || p.username;
+        p.pfp = sanitizePfp(v.user.pfp) || p.pfp;
+      }
+    }
+    this.setUserId(client, p, userId, carriedFrom);
+  }
+
+  // Called from authenticate; answers with progress / noProgress / serverError.
+  private setUserId(client: Client, p: PlayerState, raw: string, carriedFrom: string[]) {
     let userId = raw.slice(0, 128);
     // Guests (client-made `guest-...` ids) get no identity: nothing is loaded or saved for them.
     if (userId.startsWith(GUEST_ID_PREFIX)) userId = "";
     const prev = this.userIds.get(client.sessionId) || "";
     // No change (e.g. a username-only identify) -- but the very first call must still answer.
-    if (userId === prev && this.identified.has(client.sessionId)) return;
+    if (userId === prev && this.identified.has(client.sessionId) && this.loaded.has(client.sessionId)) return;
     this.identified.add(client.sessionId);
-    this.loaded.delete(client.sessionId); // no writes until the new identity's save is read
-    this.spinStates.delete(client.sessionId); // nor spins
     p.signedIn = !!userId;
+    p.uid = userId;
 
     if (userId) {
       // Evict any OTHER live session already claiming this account, so one account never has
-      // two racing Mongo writers (a crashed tab lingers up to RECONNECT_SECONDS via
-      // allowReconnection in onLeave).
+      // two writers (a crashed tab lingers up to RECONNECT_SECONDS via allowReconnection).
       for (const [sid, uid] of this.userIds) {
         if (sid === client.sessionId || uid !== userId) continue;
         this.forgetSession(sid);
@@ -287,18 +282,19 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       this.userIds.delete(client.sessionId);
     }
 
-    void this.loadProgress(client, userId, p);
+    void this.loadProgress(client, userId, p, carriedFrom);
   }
 
   // Sends the saved doc to just this client so it can hydrate its state ("progress"), or
   // "noProgress" when there is nothing to load (new account, guest, or Mongo unset). A failed read
   // sends "serverError" and keeps saving off, so a save that could not be read is never overwritten.
-  private async loadProgress(client: Client, userId: string, p: PlayerState) {
+  private async loadProgress(client: Client, userId: string, p: PlayerState, carriedFrom: string[]) {
     const players = getPlayers();
     let doc: PlayerDoc | null = null;
     if (userId && players) {
       try {
         doc = await players.findOne({ _id: userId });
+        if (!doc) doc = await this.carryOver(userId, carriedFrom);
       } catch (err) {
         console.warn("[WorldRoom] loadProgress failed", err);
         client.send("serverError", {});
@@ -310,17 +306,31 @@ export class WorldRoom extends Room<{ state: WorldState }> {
 
     this.loaded.add(client.sessionId);
     const now = Date.now();
-    const spin = spinStateFrom(doc, now);
-    this.spinStates.set(client.sessionId, spin);
     if (!doc) client.send("noProgress", { serverTime: now });
     else client.send("progress", { ...(sanitizeProgress(doc) ?? {}), serverTime: now });
-    client.send("spins", this.spinView(spin, now));
 
     // Daily Reward: today's day unlocks on join (server clock), then the client gets the calendar.
     const daily = readDaily(doc);
     this.dailies.set(client.sessionId, daily);
     if (rollDaily(daily)) await this.saveDaily(client.sessionId, daily);
     if (this.dailies.get(client.sessionId) === daily) client.send("daily", dailyView(daily));
-    void this.sendLeaderboard(client);
+  }
+
+  // A signed-in player with no save yet inherits the progress of the Bloxity guest this browser
+  // played as before (token verify `carriedFrom`), once: the guest's doc is then marked used.
+  // Returns the guest's doc to start from (the client saves it under the new id), or null.
+  private async carryOver(userId: string, carriedFrom: string[]): Promise<PlayerDoc | null> {
+    const players = getPlayers();
+    if (!players) return null;
+    for (const guestId of carriedFrom) {
+      if (guestId === userId) continue;
+      const guest = await players.findOne({ _id: guestId });
+      if (!guest || guest.carriedTo) continue;
+      await players.updateOne({ _id: guestId }, { $set: { carriedTo: userId } });
+      const { _id, carriedTo, ...rest } = guest;
+      await players.updateOne({ _id: userId }, { $set: { ...rest, updatedAt: new Date() }, $setOnInsert: { version: 1 } }, { upsert: true });
+      return { ...rest, _id: userId };
+    }
+    return null;
   }
 }
