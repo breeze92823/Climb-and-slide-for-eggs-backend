@@ -6,6 +6,7 @@ export interface Pose {
   z: number;
   yaw: number;
   speed: number;
+  anim: number; // bit flags: 1 sliding, 2 carrying overhead, 4 carrying in hand, 8 lifting
 }
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -16,7 +17,7 @@ const TAU = 2 * Math.PI;
 export function sanitizePose(raw: unknown): Pose | null {
   const m = raw as Partial<Record<keyof Pose, unknown>> | null;
   if (!m || typeof m !== "object") return null;
-  const { x, y, z, yaw, speed } = m;
+  const { x, y, z, yaw, speed, anim } = m;
   if (!finite(x) || !finite(y) || !finite(z) || !finite(yaw) || !finite(speed)) return null;
   return {
     x: clamp(x, -POSE_COORD_MAX, POSE_COORD_MAX),
@@ -24,6 +25,7 @@ export function sanitizePose(raw: unknown): Pose | null {
     z: clamp(z, -POSE_COORD_MAX, POSE_COORD_MAX),
     yaw: ((((yaw + Math.PI) % TAU) + TAU) % TAU) - Math.PI,
     speed: clamp(speed, 0, POSE_SPEED_MAX),
+    anim: finite(anim) ? Math.trunc(clamp(anim, 0, 15)) : 0,
   };
 }
 
