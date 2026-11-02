@@ -4,8 +4,8 @@ import type { ColyseusTestServer } from "@colyseus/testing";
 import type appConfig from "../src/app.config.js";
 import { WorldState } from "../src/rooms/schema/WorldState.js";
 import { __setPlayersForTest } from "../src/db.js";
-import { AVATAR_MAX_LEN, POSE_COORD_MAX, POSE_SPEED_MAX } from "../src/constants.js";
-import { sanitizeAvatar, sanitizePose } from "../src/presence.js";
+import { AVATAR_MAX_LEN, POSE_COORD_MAX, POSE_SPEED_MAX, ROOM_MAX_CLIENTS } from "../src/constants.js";
+import { sanitizeAvatar, sanitizeBase, sanitizePose } from "../src/presence.js";
 import { sleep } from "./fakePlayers.js";
 import { testServer } from "./server.js";
 
@@ -30,6 +30,13 @@ describe("presence rules", () => {
     assert.strictEqual(sanitizeAvatar({ look: "x".repeat(AVATAR_MAX_LEN + 1) }), null);
     assert.strictEqual(sanitizeAvatar({ look: { a: 1 } }), null);
     assert.strictEqual(sanitizeAvatar(null), null);
+  });
+
+  it("rebuilds a plot summary from bounded values only", () => {
+    assert.deepStrictEqual(JSON.parse(sanitizeBase({ p: ["cat", 5, "a b", "dog"], w: "donut", r: "1K$/s" })!), { p: ["cat", "dog"], w: "donut", r: "1K$/s" });
+    assert.deepStrictEqual(JSON.parse(sanitizeBase({ p: [], w: "<x>", r: 7 })!), { p: [], w: "", r: "" });
+    assert.strictEqual(sanitizeBase({ w: "donut" }), null);
+    assert.strictEqual(sanitizeBase("x"), null);
   });
 });
 
@@ -64,5 +71,28 @@ describe("presence room", () => {
     const p = room.state.players.get(a.sessionId)!;
     assert.strictEqual(p.x, POSE_COORD_MAX);
     assert.strictEqual(p.avatar, '{"hatId":"1"}', "an oversized look is ignored");
+  });
+
+  it("seats four players on their own bases, frees a seat on leaving and shows each plot", async () => {
+    assert.strictEqual(ROOM_MAX_CLIENTS, 4);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const a = await colyseus.connectTo(room, { username: "A" });
+    const b = await colyseus.connectTo(room, { username: "B" });
+    const c = await colyseus.connectTo(room, { username: "C" });
+    const d = await colyseus.connectTo(room, { username: "D" });
+    await sleep(50);
+    const seats = [a, b, c, d].map((x) => room.state.players.get(x.sessionId)!.seat);
+    assert.deepStrictEqual([...seats].sort(), [0, 1, 2, 3]);
+
+    b.send("setBase", { p: ["cat", "dog"], w: "donut", r: "9K$/s" });
+    await sleep(100);
+    assert.deepStrictEqual(JSON.parse(a.state.players.get(b.sessionId)!.base), { p: ["cat", "dog"], w: "donut", r: "9K$/s" });
+
+    const freed = room.state.players.get(c.sessionId)!.seat;
+    await c.leave();
+    await sleep(100);
+    const e = await colyseus.connectTo(room, { username: "E" });
+    await sleep(50);
+    assert.strictEqual(room.state.players.get(e.sessionId)!.seat, freed);
   });
 });

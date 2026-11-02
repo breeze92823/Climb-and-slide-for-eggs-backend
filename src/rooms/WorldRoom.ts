@@ -3,7 +3,7 @@ import { WorldState, PlayerState } from "./schema/WorldState.js";
 import { AD_PLACEMENTS, GUEST_ID_PREFIX, POSE_MIN_INTERVAL_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS, ROOM_MAX_CLIENTS, STATS_EVERY_MS } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
 import { sanitizeProgress } from "../sanitize.js";
-import { sanitizeAvatar, sanitizePose } from "../presence.js";
+import { sanitizeAvatar, sanitizeBase, sanitizePose } from "../presence.js";
 import { claimDaily, dailyFields, dailyView, readDaily, rollDaily, type DailyState } from "../daily.js";
 import { reportStats, statValues, verificationRequired, verifyGameToken, verifyRewardToken } from "../bloxity.js";
 
@@ -70,6 +70,12 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       const p = this.state.players.get(client.sessionId);
       const look = sanitizeAvatar(msg);
       if (p && look !== null) p.avatar = look;
+    },
+    // The player's plot (active pets, equipped weight, rate), so the other seats can draw it.
+    setBase: (client: Client, msg: unknown) => {
+      const p = this.state.players.get(client.sessionId);
+      const base = sanitizeBase(msg);
+      if (p && base !== null) p.base = base;
     },
     // Debounced push of the client's progress (only the sections that changed). Upserts, so a
     // first save creates the document.
@@ -161,8 +167,17 @@ export class WorldRoom extends Room<{ state: WorldState }> {
 
   onJoin(client: Client, options?: JoinOptions) {
     const p = new PlayerState();
+    p.seat = this.freeSeat();
     this.state.players.set(client.sessionId, p);
     void this.authenticate(client, p, options);
+  }
+
+  // The lowest base seat nobody holds (a leaver's seat frees when forgetSession drops them).
+  private freeSeat(): number {
+    const taken = new Set<number>();
+    this.state.players.forEach((q) => taken.add(q.seat));
+    for (let i = 0; i < ROOM_MAX_CLIENTS; i++) if (!taken.has(i)) return i;
+    return -1;
   }
 
   // A deliberate `room.leave()` closes with CONSENTED -- drop the player at once. Anything

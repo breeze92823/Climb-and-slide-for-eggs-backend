@@ -15,6 +15,8 @@ export const PlayerState = schema(
     yaw: t.float32().default(0), // radians the character faces
     speed: t.float32().default(0), // horizontal m/s, drives the walk cycle
     posed: t.boolean().default(false), // sent at least one pose: nobody is drawn before it
+    seat: t.int8().default(-1), // base plot 0..ROOM_MAX_CLIENTS-1 (east to west), the lowest free one at join
+    base: t.string().default(""), // sanitized plot summary JSON (presence.ts sanitizeBase): pets, weight, rate
     avatar: t.string().default(""), // Bloxity avatar look JSON, length-capped, never parsed here
   },
   "PlayerState",

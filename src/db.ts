@@ -17,6 +17,7 @@ export interface PlayerDoc {
   auto?: boolean; // Auto Climb
   // Lobby HUD (lobbyHud.js)
   cash?: number;
+  coins?: number; // paid currency bought with cash (coins.js)
   cashAt?: number; // epoch ms the cash was saved: offline earnings are paid from it
   // The player's plot (baseFarm.js)
   placed?: PlacedEgg[];
@@ -34,6 +35,12 @@ export interface PlayerDoc {
   sellAuto?: boolean;
   // Daily Rewards: paw coins won (the days themselves are server-owned, see below)
   paws?: number;
+  // Lobby goals (goals.js)
+  goalPlayed?: number; // s played in all
+  goalHatched?: number; // eggs hatched in all
+  goalGiftAt?: number; // goalPlayed at which the next free gift is ready
+  goalPaw?: number; // paw coin steps claimed
+  goalDone?: string[]; // one-time rewards claimed
   lastSeen?: number; // epoch ms of the last activity
   // Daily Rewards (daily.ts): written by the server only, never by saveProgress.
   dailyDay?: number; // days unlocked this cycle
