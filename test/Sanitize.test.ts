@@ -1,58 +1,49 @@
 import assert from "assert";
 
-import { CURRENCY_MAX } from "../src/constants.js";
+import { BEST_MAX, CURRENCY_MAX } from "../src/constants.js";
 import { sanitizeProgress } from "../src/sanitize.js";
 
 describe("sanitizeProgress", () => {
   it("rejects non-objects and bounds numbers", () => {
     assert.strictEqual(sanitizeProgress(null), null);
     assert.strictEqual(sanitizeProgress([1]), null);
-    const out = sanitizeProgress({ trophies: 1e40, gems: -5, energy: NaN, rebirths: 3.7, autoRebirth: "yes", hack: "x" })!;
-    assert.strictEqual(out.trophies, CURRENCY_MAX);
-    assert.strictEqual(out.gems, 0);
-    assert.strictEqual(out.energy, undefined);
+    const out = sanitizeProgress({ cash: 1e40, strength: -5, best: 1e12, rebirths: 3.7, auto: "yes", paws: NaN, hack: "x" })!;
+    assert.strictEqual(out.cash, CURRENCY_MAX);
+    assert.strictEqual(out.strength, 0);
+    assert.strictEqual(out.best, BEST_MAX);
     assert.strictEqual(out.rebirths, 3);
-    assert.strictEqual(out.autoRebirth, undefined);
+    assert.strictEqual(out.auto, undefined);
+    assert.strictEqual(out.paws, undefined);
     assert.ok(!("hack" in out));
   });
 
-  it("keeps well-formed catalog ids and only equips an owned one", () => {
-    const out = sanitizeProgress({ boats: ["raft", "canoe", "canoe", "Bad Id!", 7], boat: "canoe", engines: ["basic", "ladder-3"], engine: "ladder-9" })!;
-    assert.deepStrictEqual(out.boats, ["raft", "canoe"]);
-    assert.strictEqual(out.boat, "canoe");
-    assert.deepStrictEqual(out.engines, ["basic", "ladder-3"]);
-    assert.strictEqual(out.engine, undefined);
-    assert.strictEqual(sanitizeProgress({ partner: "" })!.partner, "");
-    assert.strictEqual(sanitizeProgress({ trail: "waterRipple" })!.trail, "waterRipple");
+  it("returns only the fields that were sent", () => {
+    assert.deepStrictEqual(sanitizeProgress({ cash: 5 }), { cash: 5 });
   });
 
-  it("keeps well-formed pets and caps the equipped ones at the slots", () => {
+  it("keeps well-formed hotbar eggs, placed eggs and pets", () => {
     const out = sanitizeProgress({
-      petSlots: 2,
-      pets: [
-        { kind: "dog", tier: 0, equipped: true, locked: false },
-        { kind: "cat", tier: 1.5, equipped: true },
-        { kind: "Bad Id!", tier: 0 },
-        { kind: "fox", tier: 2, equipped: true, locked: true },
-        { kind: "bear", tier: 0, equipped: true },
-        "x",
-      ],
+      eggs: [0, 2, 2, -1, 1.5, "x", 999],
+      placed: [{ tier: 1, x: 3, z: -4 }, { tier: 1.5, x: 0, z: 0 }, { tier: 0, x: NaN, z: 0 }, "x"],
+      pets: [{ id: "parrot", on: true }, { id: "Bad Id!", on: true }, { id: "bat" }, 7],
+      baseLevel: 2.9,
     })!;
-    assert.deepStrictEqual(sanitizeProgress({ eggsSeen: ["dog", "dog", "Bad Id!", "dragon"] })!.eggsSeen, ["dog", "dragon"]);
-    const worlds = sanitizeProgress({ world: "city", worldsUnlocked: ["city", "city", "Bad Id!"] })!;
-    assert.deepStrictEqual([worlds.world, worlds.worldsUnlocked], ["city", ["city"]]);
-    assert.strictEqual(sanitizeProgress({ world: "Bad World!" })!.world, undefined);
-    assert.deepStrictEqual(out.pets, [
-      { kind: "dog", tier: 0, equipped: true, locked: false },
-      { kind: "fox", tier: 2, equipped: true, locked: true },
-      { kind: "bear", tier: 0, equipped: false, locked: false },
-    ]);
+    assert.deepStrictEqual(out.eggs, [0, 2, 2]);
+    assert.deepStrictEqual(out.placed, [{ tier: 1, x: 3, z: -4 }]);
+    assert.deepStrictEqual(out.pets, [{ id: "parrot", on: true }, { id: "bat", on: false }]);
+    assert.strictEqual(out.baseLevel, 2);
   });
 
-  it("bounds the Online Gifts state", () => {
-    const out = sanitizeProgress({ giftTime: -4, giftsClaimed: [0, 0, 3, 99, "1"], potions: { golden: 2.9, "bad id": 1, doubleWin: "x" } })!;
-    assert.strictEqual(out.giftTime, 0);
-    assert.deepStrictEqual(out.giftsClaimed, [0, 3]);
-    assert.deepStrictEqual(out.potions, { golden: 2 });
+  it("only equips an owned weight and keeps Index keys well-formed", () => {
+    const out = sanitizeProgress({
+      weightsOwned: ["dumbbell", "dumbbell", "Bad Id!"],
+      weightEquipped: "sphere",
+      indexEggs: ["basic", "bad id"],
+      indexFound: ["normal:parrot", "normal", "gold:bat:x"],
+    })!;
+    assert.deepStrictEqual(out.weightsOwned, ["dumbbell"]);
+    assert.strictEqual(out.weightEquipped, undefined);
+    assert.deepStrictEqual(out.indexEggs, ["basic"]);
+    assert.deepStrictEqual(out.indexFound, ["normal:parrot"]);
   });
 });

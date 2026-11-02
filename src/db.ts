@@ -1,58 +1,61 @@
 import { MongoClient, type Collection } from "mongodb";
 
-import { LEADERBOARD_STATS } from "./constants.js";
-
 // Bloxity Legion hosting injects MONGODB_URI per game+channel -- an isolated database with
 // scoped credentials. A local `npm start` normally has no Mongo reachable, so a missing or
 // unreachable URI must degrade to "no persistence" rather than crash the room.
 
-// The persisted client state (what `saveProgress` carries, see sanitize.ts). The client keeps
-// nothing in the browser: this document is the player's only save.
+// The persisted client state (what `saveProgress` carries, see sanitize.ts). Flat on purpose, so
+// the personal best can be a `$max` field. The client's src/saves.js maps each of its save
+// sections (run, cash, farm, weights, rebirth, index, sell, daily) onto these names.
 export interface PlayerDoc {
-  _id: string; // Bloxity user id -- see WorldRoom.ts (guests are never saved)
+  _id: string; // Bloxity user id (verified token) -- see WorldRoom.ts
   username?: string; // display name as of the last save
-  trophies?: number; // Wins (the HUD's trophy counter, the shop currency)
-  gems?: number;
-  energy?: number; // lightning (rebirth.js), the race speed
+  // Climb run (climbRun.js)
+  best?: number; // best climb, HUD metres (only ever goes up)
+  strength?: number;
+  eggs?: number[]; // eggs in the hotbar: tier index per egg
+  auto?: boolean; // Auto Climb
+  // Lobby HUD (lobbyHud.js)
+  cash?: number;
+  cashAt?: number; // epoch ms the cash was saved: offline earnings are paid from it
+  // The player's plot (baseFarm.js)
+  placed?: PlacedEgg[];
+  pets?: SavedPet[];
+  baseLevel?: number;
+  // Treadmill Shop (weightShop.js)
+  weightsOwned?: string[];
+  weightEquipped?: string;
+  // Rebirth window
   rebirths?: number;
-  autoRebirth?: boolean;
-  bestDistance?: number; // personal best race, studs (only ever goes up)
-  playtime?: number; // s with the game visible
-  boats?: string[]; // owned boat ids (client BOATS.list)
-  boat?: string; // the equipped boat (an owned one)
-  engines?: string[]; // owned engine ids (client engine.js ENGINES)
-  engine?: string; // the equipped engine, "" = none
-  partners?: string[]; // owned partner ids (client PARTNER.partners)
-  partner?: string; // the equipped partner, "" = none
-  trails?: string[]; // owned trail ids (client TRAILS.list)
-  trail?: string; // the equipped trail, "" = none
-  pets?: SavedPet[]; // owned pets (client pets.js), at most PETS_MAX
-  petSlots?: number; // pets equipped at once
-  petStorage?: number; // pets owned at most
-  eggsSeen?: string[]; // pet kinds ever hatched (client eggs.js: the NEW! tag)
-  world?: string; // the world the player was in (client worlds.js WORLDS), "" = the start world
-  worldsUnlocked?: string[]; // worlds whose portal requirement was met once (they stay open)
-  giftTime?: number; // Online Gifts clock, s online this round
-  giftsClaimed?: number[]; // GIFTS.list indexes claimed this round
-  potions?: Record<string, number>; // potion id -> count (gifts.js)
+  // Index window (petIndex.js)
+  indexEggs?: string[]; // egg ids revealed
+  indexFound?: string[]; // "<tab>:<petId>"
+  // Sell window
+  sellAuto?: boolean;
+  // Daily Rewards: paw coins won (the days themselves are server-owned, see below)
+  paws?: number;
   lastSeen?: number; // epoch ms of the last activity
-  // Spin wheel (spin.ts): written only by the server's `spin` handler, never by saveProgress.
-  spins?: number; // spins ready to use
-  spinAt?: number; // epoch ms the next free spin arrives
-  // Daily Reward (daily.ts): written by the server only, never by saveProgress.
+  // Daily Rewards (daily.ts): written by the server only, never by saveProgress.
   dailyDay?: number; // days unlocked this cycle
   dailyLast?: number; // UTC day index of the last unlock
   dailyClaimed?: number[]; // claimed day indexes this cycle
+  // Set on a Bloxity guest's doc once its progress was carried into an account.
+  carriedTo?: string;
   version: number;
   updatedAt: Date;
 }
 
-// One owned pet: its kind (client PETS.kinds key) and craft tier (index into PETS.tiers).
-export interface SavedPet {
-  kind: string;
+// One egg placed on the plot: its tier index and where.
+export interface PlacedEgg {
   tier: number;
-  equipped: boolean;
-  locked: boolean;
+  x: number;
+  z: number;
+}
+
+// One owned pet: its id (client INDEX / PLAYTIME.pets) and whether it is on the plot.
+export interface SavedPet {
+  id: string;
+  on: boolean;
 }
 
 let client: MongoClient | null = null;
@@ -70,10 +73,6 @@ export async function connectDb(): Promise<void> {
     // No dbName passed to .db() -- the injected URI already points at this game+channel's database.
     players = client.db().collection<PlayerDoc>("players");
     console.log("[db] connected to MongoDB");
-    // The leaderboards sort and count by these (leaderboard.ts).
-    for (const stat of LEADERBOARD_STATS) {
-      players.createIndex({ [stat]: -1 }).catch((err) => console.warn(`[db] index on ${stat} failed`, err));
-    }
   } catch (err) {
     console.warn("[db] connect failed -- player progress will not persist:", err);
     client = null;
