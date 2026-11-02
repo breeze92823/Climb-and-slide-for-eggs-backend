@@ -26,6 +26,9 @@ export interface PlayerDoc {
   // Treadmill Shop (weightShop.js)
   weightsOwned?: string[];
   weightEquipped?: string;
+  // Trail Shop (trailShop.js)
+  trailsOwned?: string[];
+  trailEquipped?: string;
   // Rebirth window
   rebirths?: number;
   // Index window (petIndex.js)
